@@ -2,6 +2,7 @@ package automations
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,10 +19,10 @@ func (f *fakeThermometer) GetWirelessThermometerData() environment.WirelessTherm
 
 var noon = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 
-func thermometer(celsius float32, reported time.Time) *fakeThermometer {
+func thermometer(name string, fahrenheit float32, reported time.Time) *fakeThermometer {
 	return &fakeThermometer{data: environment.WirelessThermometer{
-		Name:       "Room",
-		SensorData: environment.SensorData{HasData: true, Temperature: celsius, LastUpdateTime: reported},
+		Name:       name,
+		SensorData: environment.SensorData{HasData: true, Temperature: Fahrenheit(fahrenheit).Celsius(), LastUpdateTime: reported},
 	}}
 }
 
@@ -32,6 +33,15 @@ func withNow(t *testing.T, at time.Time) {
 	now = func() time.Time { return at }
 
 	t.Cleanup(func() { now = previous })
+}
+
+func expect(t *testing.T, what string, condition Condition, wantResult Result, wantReason string) {
+	t.Helper()
+
+	result, reason := condition()
+	if result != wantResult || reason != wantReason {
+		t.Errorf("%s:\n got  %v %q\n want %v %q", what, result, reason, wantResult, wantReason)
+	}
 }
 
 func TestTemperature(t *testing.T) {
@@ -64,84 +74,113 @@ func TestTemperature(t *testing.T) {
 func TestSwitchIs(t *testing.T) {
 	fan := sw("Fan", device.SwitchStateOn)
 
-	if met, reason := SwitchIs(fan, device.SwitchStateOn)(); !met || reason != "" {
-		t.Errorf("on is on: %v %q", met, reason)
-	}
-
-	if met, reason := SwitchIs(fan, device.SwitchStateOff)(); met || reason != "Fan is On, not Off" {
-		t.Errorf("on is not off: %v %q", met, reason)
-	}
-
-	unreported := sw("Fan", device.SwitchStateUnknown)
-	if met, reason := SwitchIs(unreported, device.SwitchStateOn)(); met || reason != "Fan has not said whether it is on or off" {
-		t.Errorf("unreported: %v %q", met, reason)
-	}
-
-	nameless := sw("", device.SwitchStateOff)
-	if _, reason := SwitchIs(nameless, device.SwitchStateOn)(); reason != "the switch is Off, not On" {
-		t.Errorf("nameless: %q", reason)
-	}
+	expect(t, "on is on", SwitchIs(fan, device.SwitchStateOn), Met, "Fan is On")
+	expect(t, "on is not off", SwitchIs(fan, device.SwitchStateOff), Unmet, "Fan is On, not Off")
+	expect(t, "unreported", SwitchIs(sw("Fan", device.SwitchStateUnknown), device.SwitchStateOn), Unknown,
+		"Fan has not said whether it is on or off")
+	expect(t, "nameless", SwitchIs(sw("", device.SwitchStateOff), device.SwitchStateOn), Unmet, "the switch is Off, not On")
 }
 
-func TestTemperatureBelow(t *testing.T) {
+func TestTemperatureBelowAndAbove(t *testing.T) {
 	withNow(t, noon)
 
 	limit := Fahrenheit(75)
 	fresh := noon.Add(-time.Minute)
 
-	if met, reason := TemperatureBelow(thermometer(Fahrenheit(74.9).Celsius(), fresh), limit, 10*time.Minute)(); !met || reason != "" {
-		t.Errorf("below: %v %q", met, reason)
-	}
+	expect(t, "below, below", TemperatureBelow(thermometer("Room", 74.9, fresh), limit, 10*time.Minute), Met,
+		"Room reads 74.9°F (23.8°C), below 75.0°F (23.9°C)")
+	expect(t, "above, below", TemperatureBelow(thermometer("Room", 78.1, fresh), limit, 10*time.Minute), Unmet,
+		"Room reads 78.1°F (25.6°C), not below 75.0°F (23.9°C)")
+	expect(t, "above, above", TemperatureAbove(thermometer("Room", 78.1, fresh), limit, 10*time.Minute), Met,
+		"Room reads 78.1°F (25.6°C), above 75.0°F (23.9°C)")
+	expect(t, "below, above", TemperatureAbove(thermometer("Room", 74.9, fresh), limit, 10*time.Minute), Unmet,
+		"Room reads 74.9°F (23.8°C), not above 75.0°F (23.9°C)")
 
-	met, reason := TemperatureBelow(thermometer(Fahrenheit(78.1).Celsius(), fresh), limit, 10*time.Minute)()
-	if met || reason != "Room reads 78.1°F (25.6°C), not below 75.0°F (23.9°C)" {
-		t.Errorf("above: %v %q", met, reason)
-	}
+	// At the limit is neither below nor above.
+	at := thermometer("Room", 0, fresh)
+	at.data.SensorData.Temperature = limit.Celsius()
 
-	// At the limit isn't below it.
-	if met, _ := TemperatureBelow(thermometer(limit.Celsius(), fresh), limit, 10*time.Minute)(); met {
+	if result, _ := TemperatureBelow(at, limit, 0)(); result != Unmet {
 		t.Error("at the limit counted as below")
+	}
+
+	if result, _ := TemperatureAbove(at, limit, 0)(); result != Unmet {
+		t.Error("at the limit counted as above")
 	}
 }
 
-func TestTemperatureBelow_DoesNotGoByAReadingThatIsOldOrMissing(t *testing.T) {
+func TestTemperature_CanNotBeToldFromAReadingThatIsOldOrMissing(t *testing.T) {
 	withNow(t, noon)
 
 	limit := Fahrenheit(75)
-	cold := Fahrenheit(60).Celsius()
 
-	old := thermometer(cold, noon.Add(-25*time.Minute))
-	if met, reason := TemperatureBelow(old, limit, 10*time.Minute)(); met || reason != "Room last reported 25m0s ago, which is too long ago to go by" {
-		t.Errorf("old: %v %q", met, reason)
-	}
+	old := thermometer("Room", 60, noon.Add(-25*time.Minute))
+	expect(t, "old, below", TemperatureBelow(old, limit, 10*time.Minute), Unknown,
+		"Room last reported 25m0s ago, which is too long ago to go by")
+	expect(t, "old, above", TemperatureAbove(old, limit, 10*time.Minute), Unknown,
+		"Room last reported 25m0s ago, which is too long ago to go by")
 
 	// Exactly as old as allowed is still good.
-	edge := thermometer(cold, noon.Add(-10*time.Minute))
-	if met, _ := TemperatureBelow(edge, limit, 10*time.Minute)(); !met {
+	if result, _ := TemperatureBelow(thermometer("Room", 60, noon.Add(-10*time.Minute)), limit, 10*time.Minute)(); result != Met {
 		t.Error("a reading as old as allowed was refused")
 	}
 
 	// No limit on the age.
-	if met, _ := TemperatureBelow(old, limit, 0)(); !met {
+	if result, _ := TemperatureBelow(old, limit, 0)(); result != Met {
 		t.Error("a reading was refused although any age is allowed")
 	}
 
 	none := &fakeThermometer{data: environment.WirelessThermometer{Name: "Room"}}
-	if met, reason := TemperatureBelow(none, limit, 10*time.Minute)(); met || reason != "Room has not reported a temperature" {
-		t.Errorf("never reported: %v %q", met, reason)
+	expect(t, "never reported", TemperatureBelow(none, limit, 10*time.Minute), Unknown, "Room has not reported a temperature")
+	expect(t, "nameless", TemperatureAbove(&fakeThermometer{}, limit, 0), Unknown, "the thermometer has not reported a temperature")
+}
+
+func TestWarmer(t *testing.T) {
+	withNow(t, noon)
+
+	fresh := noon.Add(-time.Minute)
+	attic := thermometer("Attic", 94, fresh)
+	outside := thermometer("Outside", 80.1, fresh)
+
+	expect(t, "warmer", Warmer(attic, outside, 10*time.Minute), Met,
+		"Attic reads 94.0°F (34.4°C), warmer than Outside at 80.1°F (26.7°C)")
+	expect(t, "cooler", Warmer(outside, attic, 10*time.Minute), Unmet,
+		"Outside reads 80.1°F (26.7°C), not warmer than Attic at 94.0°F (34.4°C)")
+
+	same := thermometer("Same", 94, fresh)
+	if result, _ := Warmer(attic, same, 0)(); result != Unmet {
+		t.Error("the same temperature counted as warmer")
 	}
 
-	nameless := &fakeThermometer{}
-	if _, reason := TemperatureBelow(nameless, limit, 0)(); reason != "the thermometer has not reported a temperature" {
-		t.Errorf("nameless: %q", reason)
-	}
+	stale := thermometer("Outside", 70, noon.Add(-time.Hour))
+	silent := &fakeThermometer{data: environment.WirelessThermometer{Name: "Attic"}}
+
+	expect(t, "other stale", Warmer(attic, stale, 10*time.Minute), Unknown,
+		"Outside last reported 1h0m0s ago, which is too long ago to go by")
+	expect(t, "first silent", Warmer(silent, outside, 10*time.Minute), Unknown, "Attic has not reported a temperature")
+	expect(t, "both", Warmer(silent, stale, 10*time.Minute), Unknown,
+		"Attic has not reported a temperature; Outside last reported 1h0m0s ago, which is too long ago to go by")
+}
+
+func TestAllOf(t *testing.T) {
+	met := func() (Result, string) { return Met, "a" }
+	met2 := func() (Result, string) { return Met, "b" }
+	unmet := func() (Result, string) { return Unmet, "c" }
+	unknown := func() (Result, string) { return Unknown, "d" }
+
+	expect(t, "all met", AllOf(met, met2), Met, "a; b")
+	expect(t, "one unmet", AllOf(met, unmet, met2), Unmet, "c")
+	expect(t, "one unknown", AllOf(met, unknown), Unknown, "d")
+	expect(t, "unknown outranks unmet", AllOf(unmet, unknown, met), Unknown, "d")
+	expect(t, "all the unmet, all the reasons", AllOf(unmet, unmet, met), Unmet, "c; c")
+	expect(t, "none", AllOf(), Met, "")
 }
 
 func TestWhen_RunsOnlyWhenEveryConditionIsMetAndOtherwiseIsNotReadyNamingWhatIsNot(t *testing.T) {
 	withNow(t, noon)
 
 	fan := sw("Fan", device.SwitchStateOff)
-	room := thermometer(Fahrenheit(80).Celsius(), noon)
+	room := thermometer("Room", 80, noon)
 	runs := 0
 
 	run := When(
@@ -175,9 +214,21 @@ func TestWhen_RunsOnlyWhenEveryConditionIsMetAndOtherwiseIsNotReadyNamingWhatIsN
 	}
 }
 
+func TestWhen_AConditionThatCanNotBeToldIsNotMetEither(t *testing.T) {
+	runs := 0
+	silent := &fakeThermometer{data: environment.WirelessThermometer{Name: "Room"}}
+
+	run := When(func() (string, error) { runs++; return "", nil }, TemperatureBelow(silent, Fahrenheit(75), 0))
+
+	_, err := run()
+	if reason, ok := automation.NotReadyReason(err); !ok || runs != 0 || reason != "Room has not reported a temperature" {
+		t.Errorf("reason %q, ok %v, runs %d", reason, ok, runs)
+	}
+}
+
 func TestWhen_AnErrorFromWhatItRunsIsAFailureNotAWait(t *testing.T) {
 	boom := errors.New("the plug is offline")
-	run := When(func() (string, error) { return "", boom }, func() (bool, string) { return true, "" })
+	run := When(func() (string, error) { return "", boom }, func() (Result, string) { return Met, "" })
 
 	_, err := run()
 
@@ -217,13 +268,23 @@ func (scriptedTrigger) Previous(time.Time) (time.Time, bool) { return time.Time{
 func (scriptedTrigger) Next(time.Time) (time.Time, bool)     { return time.Time{}, false }
 func (scriptedTrigger) Description() string                  { return "scripted" }
 
-func TestWhen_PanicsForWhatCouldNotWork(t *testing.T) {
+func TestConditions_PanicForWhatCouldNotWork(t *testing.T) {
 	ok := func() (string, error) { return "", nil }
+	good := func() (Result, string) { return Met, "" }
+	fan := sw("Fan", device.SwitchStateOn)
+	room := thermometer("Room", 70, noon)
+
 	for name, make := range map[string]func(){
-		"no run":         func() { When(nil) },
-		"nil condition":  func() { When(ok, nil) },
-		"no switch":      func() { SwitchIs(nil, device.SwitchStateOn) },
-		"no thermometer": func() { TemperatureBelow(nil, Fahrenheit(75), 0) },
+		"when: no run":           func() { When(nil) },
+		"when: nil condition":    func() { When(ok, nil) },
+		"allof: nil condition":   func() { AllOf(good, nil) },
+		"switchis: no switch":    func() { SwitchIs(nil, device.SwitchStateOn) },
+		"below: no thermometer":  func() { TemperatureBelow(nil, Fahrenheit(75), 0) },
+		"above: no thermometer":  func() { TemperatureAbove(nil, Fahrenheit(75), 0) },
+		"warmer: first missing":  func() { Warmer(nil, room, 0) },
+		"warmer: second missing": func() { Warmer(room, nil, 0) },
+		"follow: no switch":      func() { Follow(nil, good, time.Minute) },
+		"follow: no condition":   func() { Follow(fan, nil, time.Minute) },
 	} {
 		func() {
 			defer func() {
@@ -235,5 +296,254 @@ func TestWhen_PanicsForWhatCouldNotWork(t *testing.T) {
 			make()
 		}()
 	}
+}
 
+// timedSwitch is a switch that notes when it changed, as a real one does.
+type timedSwitch struct {
+	data device.Switch
+	err  error
+	sets []device.SwitchState
+}
+
+func (s *timedSwitch) GetSwitchData() device.Switch { return s.data }
+
+func (s *timedSwitch) SetState(state device.SwitchState) error {
+	s.sets = append(s.sets, state)
+
+	if s.err != nil {
+		return s.err
+	}
+
+	if s.data.State != state {
+		s.data.LastChangeTime = now()
+	}
+
+	s.data.HasData, s.data.State = true, state
+
+	return nil
+}
+
+func newTimedSwitch(state device.SwitchState, changed time.Time) *timedSwitch {
+	return &timedSwitch{data: device.Switch{
+		Name: "Attic fan", HasData: state != device.SwitchStateUnknown, State: state, LastChangeTime: changed,
+	}}
+}
+
+func conditionOf(result Result, reason string) Condition {
+	return func() (Result, string) { return result, reason }
+}
+
+func notReadyReason(t *testing.T, err error) string {
+	t.Helper()
+
+	reason, ok := automation.NotReadyReason(err)
+	if !ok {
+		t.Fatalf("not a not-ready: %v", err)
+	}
+
+	return reason
+}
+
+func TestFollow_TurnsTheSwitchOnWhileTheConditionIsMetAndOffWhileItIsNot(t *testing.T) {
+	withNow(t, noon)
+
+	attic := newTimedSwitch(device.SwitchStateOff, noon.Add(-time.Hour))
+
+	note, err := Follow(attic, conditionOf(Met, "it is hot"), 5*time.Minute)()
+	if err != nil || note != "turned on Attic fan: it is hot" || attic.data.State != device.SwitchStateOn {
+		t.Fatalf("on: note %q, err %v, state %v", note, err, attic.data.State)
+	}
+
+	attic.data.LastChangeTime = noon.Add(-time.Hour)
+
+	note, err = Follow(attic, conditionOf(Unmet, "it is cool"), 5*time.Minute)()
+	if err != nil || note != "turned off Attic fan: it is cool" || attic.data.State != device.SwitchStateOff {
+		t.Fatalf("off: note %q, err %v, state %v", note, err, attic.data.State)
+	}
+}
+
+func TestFollow_ASwitchAlreadyAsItShouldBeIsLeftAloneQuietly(t *testing.T) {
+	withNow(t, noon)
+
+	on := newTimedSwitch(device.SwitchStateOn, noon.Add(-time.Hour))
+
+	note, err := Follow(on, conditionOf(Met, "it is hot"), 5*time.Minute)()
+	if reason := notReadyReason(t, err); note != "" || reason != "Attic fan is On, as it should be: it is hot" || len(on.sets) != 0 {
+		t.Errorf("on: note %q, reason %q, sets %v", note, reason, on.sets)
+	}
+
+	off := newTimedSwitch(device.SwitchStateOff, noon.Add(-time.Hour))
+
+	_, err = Follow(off, conditionOf(Unmet, "it is cool"), 5*time.Minute)()
+	if reason := notReadyReason(t, err); reason != "Attic fan is Off, as it should be: it is cool" || len(off.sets) != 0 {
+		t.Errorf("off: reason %q, sets %v", reason, off.sets)
+	}
+}
+
+func TestFollow_AConditionThatCanNotBeToldLeavesTheSwitchWhateverItIs(t *testing.T) {
+	withNow(t, noon)
+
+	for _, state := range []device.SwitchState{device.SwitchStateOn, device.SwitchStateOff, device.SwitchStateUnknown} {
+		fan := newTimedSwitch(state, noon.Add(-time.Hour))
+
+		_, err := Follow(fan, conditionOf(Unknown, "the thermometer went quiet"), 5*time.Minute)()
+
+		if reason := notReadyReason(t, err); reason != "leaving Attic fan as it is: the thermometer went quiet" || len(fan.sets) != 0 {
+			t.Errorf("%v: reason %q, sets %v", state, reason, fan.sets)
+		}
+	}
+}
+
+func TestFollow_DoesNotChangeTheSwitchMoreOftenThanTheInterval(t *testing.T) {
+	fan := newTimedSwitch(device.SwitchStateOff, noon.Add(-2*time.Minute))
+	follow := Follow(fan, conditionOf(Met, "hot"), 5*time.Minute)
+
+	withNow(t, noon)
+
+	_, err := follow()
+	if reason := notReadyReason(t, err); len(fan.sets) != 0 ||
+		reason != "Attic fan should be On (hot), but changed 2m0s ago, so it waits until it has been 5m0s" {
+		t.Errorf("reason %q, sets %v", reason, fan.sets)
+	}
+
+	// Just short of the interval.
+	withNow(t, noon.Add(2*time.Minute+59*time.Second))
+
+	if _, err := follow(); len(fan.sets) != 0 || err == nil {
+		t.Errorf("changed after 4m59s: %v, %v", fan.sets, err)
+	}
+
+	// Exactly the interval.
+	withNow(t, noon.Add(3*time.Minute))
+
+	if note, err := follow(); err != nil || len(fan.sets) != 1 || note == "" {
+		t.Errorf("not changed after exactly the interval: %q %v %v", note, err, fan.sets)
+	}
+}
+
+func TestFollow_ASwitchThatHasNeverChangedOrNeverReportedIsNotHeldBack(t *testing.T) {
+	withNow(t, noon)
+
+	neverChanged := newTimedSwitch(device.SwitchStateOff, time.Time{})
+
+	if _, err := Follow(neverChanged, conditionOf(Met, "hot"), time.Hour)(); err != nil || len(neverChanged.sets) != 1 {
+		t.Errorf("never changed: %v, sets %v", err, neverChanged.sets)
+	}
+
+	unreported := newTimedSwitch(device.SwitchStateUnknown, noon.Add(-time.Second))
+
+	if _, err := Follow(unreported, conditionOf(Unmet, "cool"), time.Hour)(); err != nil || len(unreported.sets) != 1 ||
+		unreported.sets[0] != device.SwitchStateOff {
+		t.Errorf("never reported: %v, sets %v", err, unreported.sets)
+	}
+}
+
+func TestFollow_AFailureToChangeTheSwitchIsAFailureNotAWait(t *testing.T) {
+	withNow(t, noon)
+
+	boom := errors.New("offline")
+	fan := newTimedSwitch(device.SwitchStateOff, noon.Add(-time.Hour))
+	fan.err = boom
+
+	_, err := Follow(fan, conditionOf(Met, "hot"), time.Minute)()
+
+	if !errors.Is(err, boom) || errors.Is(err, automation.ErrNotReady) || !strings.Contains(err.Error(), "Attic fan") {
+		t.Errorf("got %v", err)
+	}
+}
+
+// Walks an hour in which the attic hovers around the limit and the outside is as warm as the attic for a while, one
+// minute at a time, and checks the fan is never changed more often than every five minutes, is on when it should be
+// and off when it should be once it is allowed to be, and that holding it off for the interval never leaves it wrong
+// for longer than that.
+func TestFollow_AnHourOfATemperatureHoveringAroundTheLimit(t *testing.T) {
+	start := noon
+	attic := thermometer("Attic", 85, start)
+	outside := thermometer("Outside", 80, start)
+	fan := newTimedSwitch(device.SwitchStateOff, time.Time{})
+
+	// 12:00..12:59, the attic temperature at each minute: it crosses 90 back and forth.
+	atticAt := func(minute int) float32 {
+		switch {
+		case minute < 10:
+			return 85
+		case minute < 20:
+			return 91 + float32(minute%2)*2 // 91, 93, 91, 93 ...
+		case minute < 30:
+			return 89 + float32(minute%2)*2 // 89, 91, 89, 91 ... flaps around the limit
+		case minute < 40:
+			return 95
+		case minute < 50:
+			return 88
+		default:
+			return 92
+		}
+	}
+
+	condition := AllOf(
+		TemperatureAbove(attic, Fahrenheit(90), 10*time.Minute),
+		Warmer(attic, outside, 10*time.Minute),
+	)
+	follow := Follow(fan, condition, 5*time.Minute)
+
+	var changes []int
+
+	for minute := 0; minute < 60; minute++ {
+		at := start.Add(time.Duration(minute) * time.Minute)
+		withNow(t, at)
+
+		attic.data.SensorData = environment.SensorData{HasData: true, Temperature: Fahrenheit(atticAt(minute)).Celsius(), LastUpdateTime: at}
+		outside.data.SensorData.LastUpdateTime = at
+
+		before := len(fan.sets)
+
+		if _, err := follow(); err != nil {
+			if _, notReady := automation.NotReadyReason(err); !notReady {
+				t.Fatalf("minute %d: %v", minute, err)
+			}
+		}
+
+		if len(fan.sets) != before {
+			changes = append(changes, minute)
+		}
+	}
+
+	for i := 1; i < len(changes); i++ {
+		if changes[i]-changes[i-1] < 5 {
+			t.Errorf("changed at minute %d and again at %d: %v", changes[i-1], changes[i], changes)
+		}
+	}
+
+	// It never went more than a handful of times in the hour, however much the temperature flapped.
+	if len(changes) < 3 || len(changes) > 12 {
+		t.Errorf("changed %d times: %v", len(changes), changes)
+	}
+
+	// 12:50 on: the attic is 92 and the outside 80, so the fan should be on, and has had time to be.
+	if fan.data.State != device.SwitchStateOn {
+		t.Errorf("fan ended %v, changes %v", fan.data.State, changes)
+	}
+}
+
+func TestFollow_AnOutsideThatIsAsWarmAsTheAtticKeepsTheFanOff(t *testing.T) {
+	withNow(t, noon)
+
+	attic := thermometer("Attic", 95, noon)
+	outside := thermometer("Outside", 97, noon)
+	fan := newTimedSwitch(device.SwitchStateOff, time.Time{})
+
+	follow := Follow(fan, AllOf(TemperatureAbove(attic, Fahrenheit(90), 0), Warmer(attic, outside, 0)), 5*time.Minute)
+
+	_, err := follow()
+	if reason := notReadyReason(t, err); len(fan.sets) != 0 || !strings.Contains(reason, "Attic fan is Off, as it should be") ||
+		!strings.Contains(reason, "not warmer than Outside") {
+		t.Errorf("reason %q, sets %v", reason, fan.sets)
+	}
+
+	// The outside cools below the attic.
+	outside.data.SensorData.Temperature = Fahrenheit(80).Celsius()
+
+	if _, err := follow(); err != nil || len(fan.sets) != 1 || fan.sets[0] != device.SwitchStateOn {
+		t.Errorf("err %v, sets %v", err, fan.sets)
+	}
 }
