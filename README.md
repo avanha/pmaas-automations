@@ -31,17 +31,28 @@ automations.New("fan-off", "Turn off the fan once it cools after 1 AM",
 
 `Follow` keeps a switch on while a condition is met and off while it is not, changing it no more often than an interval
 (counting from when the switch last changed, so a change by hand counts too), and leaving it alone when the condition
-can't be told, such as when a thermometer has gone quiet. Run it often, in a window:
+can't be told, such as when a thermometer has gone quiet.
+
+`Regulate` is the same with two conditions, one for turning the switch on and one for turning it off, so that there can be
+a gap between them: a fan that comes on above 90°F and goes off below 88°F doesn't start and stop as the temperature
+wobbles across 90. Between the two it stays as it is. Run either often, in a window:
 
 ```go
 automations.New("attic-fan", "Run the attic fan when the attic is hot",
 	trigger.Windowed(trigger.Every(time.Minute), trigger.AtTimeOfDay(8, 0), trigger.Sun(lafayette, sun.Sunset, time.Hour)),
-	automations.Follow(atticFan,
+	automations.Regulate(atticFan,
+		// On when the attic is over 90 and warmer than outside...
 		automations.AllOf(
 			automations.TemperatureAbove(attic, automations.Fahrenheit(90), 10*time.Minute),
 			automations.Warmer(attic, outside, 10*time.Minute)),
+		// ...and off when it is under 88 or outside is warmer.
+		automations.AnyOf(
+			automations.TemperatureBelow(attic, automations.Fahrenheit(88), 10*time.Minute),
+			automations.Not(automations.Warmer(attic, outside, 10*time.Minute))),
 		5*time.Minute),
 	automations.WithCatchUp(0)) // only in the minute it is due: never run after the window has closed
 ```
 
-A condition has three answers: met, unmet, and unknown. `When` acts only on met; `Follow` holds on unknown.
+A condition has three answers: met, unmet, and unknown. `When` acts only on met; `Follow` and `Regulate` hold on unknown.
+`AllOf` is met when all are (and unknown if any is, since that one might have decided it); `AnyOf` is met when any is, whatever
+the others can tell; `Not` turns met into unmet and back.

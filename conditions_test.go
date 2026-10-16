@@ -285,6 +285,11 @@ func TestConditions_PanicForWhatCouldNotWork(t *testing.T) {
 		"warmer: second missing": func() { Warmer(room, nil, 0) },
 		"follow: no switch":      func() { Follow(nil, good, time.Minute) },
 		"follow: no condition":   func() { Follow(fan, nil, time.Minute) },
+		"anyof: nil condition":   func() { AnyOf(good, nil) },
+		"not: no condition":      func() { Not(nil) },
+		"regulate: no switch":    func() { Regulate(nil, good, good, time.Minute) },
+		"regulate: no turn on":   func() { Regulate(fan, nil, good, time.Minute) },
+		"regulate: no turn off":  func() { Regulate(fan, good, nil, time.Minute) },
 	} {
 		func() {
 			defer func() {
@@ -368,14 +373,14 @@ func TestFollow_ASwitchAlreadyAsItShouldBeIsLeftAloneQuietly(t *testing.T) {
 	on := newTimedSwitch(device.SwitchStateOn, noon.Add(-time.Hour))
 
 	note, err := Follow(on, conditionOf(Met, "it is hot"), 5*time.Minute)()
-	if reason := notReadyReason(t, err); note != "" || reason != "Attic fan is On, as it should be: it is hot" || len(on.sets) != 0 {
+	if reason := notReadyReason(t, err); note != "" || reason != "Attic fan is On: it is hot" || len(on.sets) != 0 {
 		t.Errorf("on: note %q, reason %q, sets %v", note, reason, on.sets)
 	}
 
 	off := newTimedSwitch(device.SwitchStateOff, noon.Add(-time.Hour))
 
 	_, err = Follow(off, conditionOf(Unmet, "it is cool"), 5*time.Minute)()
-	if reason := notReadyReason(t, err); reason != "Attic fan is Off, as it should be: it is cool" || len(off.sets) != 0 {
+	if reason := notReadyReason(t, err); reason != "Attic fan is Off: it is cool" || len(off.sets) != 0 {
 		t.Errorf("off: reason %q, sets %v", reason, off.sets)
 	}
 }
@@ -536,7 +541,7 @@ func TestFollow_AnOutsideThatIsAsWarmAsTheAtticKeepsTheFanOff(t *testing.T) {
 	follow := Follow(fan, AllOf(TemperatureAbove(attic, Fahrenheit(90), 0), Warmer(attic, outside, 0)), 5*time.Minute)
 
 	_, err := follow()
-	if reason := notReadyReason(t, err); len(fan.sets) != 0 || !strings.Contains(reason, "Attic fan is Off, as it should be") ||
+	if reason := notReadyReason(t, err); len(fan.sets) != 0 || !strings.Contains(reason, "Attic fan is Off") ||
 		!strings.Contains(reason, "not warmer than Outside") {
 		t.Errorf("reason %q, sets %v", reason, fan.sets)
 	}
@@ -546,5 +551,251 @@ func TestFollow_AnOutsideThatIsAsWarmAsTheAtticKeepsTheFanOff(t *testing.T) {
 
 	if _, err := follow(); err != nil || len(fan.sets) != 1 || fan.sets[0] != device.SwitchStateOn {
 		t.Errorf("err %v, sets %v", err, fan.sets)
+	}
+}
+
+func TestNot(t *testing.T) {
+	expect(t, "met", Not(conditionOf(Met, "hot")), Unmet, "hot")
+	expect(t, "unmet", Not(conditionOf(Unmet, "cool")), Met, "cool")
+	expect(t, "unknown", Not(conditionOf(Unknown, "quiet")), Unknown, "quiet")
+}
+
+func TestAnyOf(t *testing.T) {
+	met := conditionOf(Met, "a")
+	met2 := conditionOf(Met, "b")
+	unmet := conditionOf(Unmet, "c")
+	unknown := conditionOf(Unknown, "d")
+
+	expect(t, "one met", AnyOf(unmet, met), Met, "a")
+	expect(t, "all the met, all the reasons", AnyOf(met, unmet, met2), Met, "a; b")
+	expect(t, "met outranks unknown", AnyOf(unknown, met), Met, "a")
+	expect(t, "unknown outranks unmet", AnyOf(unmet, unknown), Unknown, "d")
+	expect(t, "none met", AnyOf(unmet, unmet), Unmet, "c; c")
+	expect(t, "none at all", AnyOf(), Unmet, "")
+}
+
+func TestRegulate_StaysAsItIsBetweenTheTwoConditionsWhicheverWayItIs(t *testing.T) {
+	withNow(t, noon)
+
+	// Neither is met: the temperature is between the two limits.
+	onWhenHot := conditionOf(Unmet, "89 is not above 90")
+	offWhenCool := conditionOf(Unmet, "89 is not below 88")
+
+	for _, state := range []device.SwitchState{device.SwitchStateOn, device.SwitchStateOff} {
+		fan := newTimedSwitch(state, noon.Add(-time.Hour))
+
+		_, err := Regulate(fan, onWhenHot, offWhenCool, 5*time.Minute)()
+		reason := notReadyReason(t, err)
+
+		want := "Attic fan is On: 89 is not below 88"
+		if state == device.SwitchStateOff {
+			want = "Attic fan is Off: 89 is not above 90"
+		}
+
+		if reason != want || len(fan.sets) != 0 {
+			t.Errorf("%v: reason %q, sets %v", state, reason, fan.sets)
+		}
+	}
+}
+
+func TestRegulate_OnlyTheConditionForTheWayTheSwitchCouldGoMatters(t *testing.T) {
+	withNow(t, noon)
+
+	met, unmet, unknown := conditionOf(Met, "m"), conditionOf(Unmet, "u"), conditionOf(Unknown, "k")
+
+	// Off: turning off being met is nothing to do, and turning off being unknown doesn't matter.
+	off := newTimedSwitch(device.SwitchStateOff, noon.Add(-time.Hour))
+
+	for _, turnOff := range []Condition{met, unknown} {
+		if _, err := Regulate(off, unmet, turnOff, 5*time.Minute)(); notReadyReason(t, err) != "Attic fan is Off: u" || len(off.sets) != 0 {
+			t.Errorf("an off switch: %v %v", err, off.sets)
+		}
+	}
+
+	// On: turning on being met is nothing to do, and turning on being unknown doesn't matter.
+	on := newTimedSwitch(device.SwitchStateOn, noon.Add(-time.Hour))
+
+	for _, turnOn := range []Condition{met, unknown} {
+		if _, err := Regulate(on, turnOn, unmet, 5*time.Minute)(); notReadyReason(t, err) != "Attic fan is On: u" || len(on.sets) != 0 {
+			t.Errorf("an on switch: %v %v", err, on.sets)
+		}
+	}
+
+	// And the one that matters being met is enough, whatever the other one can or can't tell.
+	turned := newTimedSwitch(device.SwitchStateOn, noon.Add(-time.Hour))
+
+	if _, err := Regulate(turned, unknown, met, 5*time.Minute)(); err != nil || len(turned.sets) != 1 || turned.sets[0] != device.SwitchStateOff {
+		t.Errorf("on, turn off met, turn on unknown: %v %v", err, turned.sets)
+	}
+
+	turnedOn := newTimedSwitch(device.SwitchStateOff, noon.Add(-time.Hour))
+
+	if _, err := Regulate(turnedOn, met, unknown, 5*time.Minute)(); err != nil || len(turnedOn.sets) != 1 || turnedOn.sets[0] != device.SwitchStateOn {
+		t.Errorf("off, turn on met, turn off unknown: %v %v", err, turnedOn.sets)
+	}
+
+	// But the one that matters, unknown, holds it.
+	if _, err := Regulate(off, unknown, met, 5*time.Minute)(); notReadyReason(t, err) != "leaving Attic fan as it is: k" || len(off.sets) != 0 {
+		t.Errorf("off, turn on unknown: %v %v", err, off.sets)
+	}
+
+	if _, err := Regulate(on, met, unknown, 5*time.Minute)(); notReadyReason(t, err) != "leaving Attic fan as it is: k" || len(on.sets) != 0 {
+		t.Errorf("on, turn off unknown: %v %v", err, on.sets)
+	}
+}
+
+func TestRegulate_TurnsOnWhenTurnOnIsMetAndOffWhenTurnOffIsMet(t *testing.T) {
+	withNow(t, noon)
+
+	fan := newTimedSwitch(device.SwitchStateOff, noon.Add(-time.Hour))
+
+	note, err := Regulate(fan, conditionOf(Met, "hot"), conditionOf(Unmet, "x"), 5*time.Minute)()
+	if err != nil || note != "turned on Attic fan: hot" || fan.data.State != device.SwitchStateOn {
+		t.Fatalf("on: %q %v %v", note, err, fan.data.State)
+	}
+
+	fan.data.LastChangeTime = noon.Add(-time.Hour)
+
+	note, err = Regulate(fan, conditionOf(Unmet, "x"), conditionOf(Met, "cool"), 5*time.Minute)()
+	if err != nil || note != "turned off Attic fan: cool" || fan.data.State != device.SwitchStateOff {
+		t.Fatalf("off: %q %v %v", note, err, fan.data.State)
+	}
+}
+
+func TestRegulate_ASwitchThatHasNotReportedIsTurnedOnIfThatIsCalledForAndOtherwiseOffIfThatIs(t *testing.T) {
+	withNow(t, noon)
+
+	met, unmet, unknown := conditionOf(Met, "m"), conditionOf(Unmet, "u"), conditionOf(Unknown, "k")
+
+	for name, c := range map[string]struct {
+		turnOn, turnOff Condition
+		want            []device.SwitchState
+		reason          string
+	}{
+		"turn on met":                              {met, unmet, []device.SwitchState{device.SwitchStateOn}, ""},
+		"both met, on first":                       {met, met, []device.SwitchState{device.SwitchStateOn}, ""},
+		"only turn off met":                        {unmet, met, []device.SwitchState{device.SwitchStateOff}, ""},
+		"turn on unknown":                          {unknown, unmet, nil, "leaving Attic fan as it is: k"},
+		"turn off unknown":                         {unmet, unknown, nil, "leaving Attic fan as it is: k"},
+		"neither met, both known":                  {unmet, unmet, nil, "Attic fan has not said whether it is on or off, and nothing says to change it: u; u"},
+		"turn off met outranks an unknown turn on": {unknown, met, []device.SwitchState{device.SwitchStateOff}, ""},
+	} {
+		fan := newTimedSwitch(device.SwitchStateUnknown, time.Time{})
+
+		_, err := Regulate(fan, c.turnOn, c.turnOff, 5*time.Minute)()
+
+		if c.want == nil {
+			if reason := notReadyReason(t, err); reason != c.reason || len(fan.sets) != 0 {
+				t.Errorf("%s: reason %q, sets %v", name, reason, fan.sets)
+			}
+
+			continue
+		}
+
+		if err != nil || len(fan.sets) != 1 || fan.sets[0] != c.want[0] {
+			t.Errorf("%s: err %v, sets %v", name, err, fan.sets)
+		}
+	}
+}
+
+func TestRegulate_DoesNotChangeTheSwitchEitherWayMoreOftenThanTheInterval(t *testing.T) {
+	for _, state := range []device.SwitchState{device.SwitchStateOn, device.SwitchStateOff} {
+		withNow(t, noon)
+
+		fan := newTimedSwitch(state, noon.Add(-time.Minute))
+
+		turnOn, turnOff := conditionOf(Met, "hot"), conditionOf(Met, "cool")
+		regulate := Regulate(fan, turnOn, turnOff, 5*time.Minute)
+
+		if _, err := regulate(); notReadyReason(t, err) == "" || len(fan.sets) != 0 {
+			t.Fatalf("%v: changed after a minute: %v", state, fan.sets)
+		}
+
+		// It changed a minute before noon, so four minutes less a second after noon is a second short of five.
+		withNow(t, noon.Add(4*time.Minute-time.Second))
+
+		if _, err := regulate(); len(fan.sets) != 0 || err == nil {
+			t.Fatalf("%v: changed a second short of the interval: %v", state, fan.sets)
+		}
+
+		withNow(t, noon.Add(4*time.Minute))
+
+		if _, err := regulate(); err != nil || len(fan.sets) != 1 {
+			t.Fatalf("%v: not changed at the interval: %v %v", state, err, fan.sets)
+		}
+	}
+}
+
+// The attic hovers a degree and a half either side of 90 for an hour. With one limit the fan would be changed as often as
+// the debounce allows; with a gap between turning on at 90 and turning off at 88 it comes on once and stays on.
+func TestRegulate_AWobbleAcrossTheLimitDoesNotMakeTheFanCycleWhenThereIsAGap(t *testing.T) {
+	start := noon
+
+	run := func(withGap bool) int {
+		attic := thermometer("Attic", 85, start)
+		fan := newTimedSwitch(device.SwitchStateOff, time.Time{})
+
+		turnOn := TemperatureAbove(attic, Fahrenheit(90), 10*time.Minute)
+
+		turnOff := Not(turnOn)
+		if withGap {
+			turnOff = TemperatureBelow(attic, Fahrenheit(88), 10*time.Minute)
+		}
+
+		regulate := Regulate(fan, turnOn, turnOff, 5*time.Minute)
+
+		for minute := 0; minute < 60; minute++ {
+			at := start.Add(time.Duration(minute) * time.Minute)
+			withNow(t, at)
+
+			reading := float32(88.5) // below 90 but not below 88
+			if minute%2 == 1 || minute == 0 {
+				reading = 91.5
+			}
+
+			attic.data.SensorData = environment.SensorData{HasData: true, Temperature: Fahrenheit(reading).Celsius(), LastUpdateTime: at}
+
+			_, _ = regulate()
+		}
+
+		return len(fan.sets)
+	}
+
+	if without := run(false); without < 8 {
+		t.Fatalf("with one limit the fan was changed %d times in the hour, which is not the cycling this test is about", without)
+	}
+
+	if with := run(true); with != 1 {
+		t.Errorf("with a gap the fan was changed %d times, want once", with)
+	}
+}
+
+func TestRegulate_ARealCycleThroughTheGapChangesTheFanAtTheLimitsOnly(t *testing.T) {
+	start := noon
+	attic := thermometer("Attic", 85, start)
+	fan := newTimedSwitch(device.SwitchStateOff, time.Time{})
+
+	regulate := Regulate(fan,
+		TemperatureAbove(attic, Fahrenheit(90), 10*time.Minute),
+		TemperatureBelow(attic, Fahrenheit(88), 10*time.Minute),
+		5*time.Minute)
+
+	// A reading every ten minutes: heating through the gap, then cooling back through it.
+	var states []string
+
+	for step, reading := range []float32{85, 89, 91, 89.5, 88.5, 87, 89, 91, 92, 89, 87.5} {
+		at := start.Add(time.Duration(step) * 10 * time.Minute)
+		withNow(t, at)
+
+		attic.data.SensorData = environment.SensorData{HasData: true, Temperature: Fahrenheit(reading).Celsius(), LastUpdateTime: at}
+
+		_, _ = regulate()
+
+		states = append(states, fan.data.State.String())
+	}
+
+	want := "Off Off On On On Off Off On On On Off"
+	if got := strings.Join(states, " "); got != want {
+		t.Errorf("fan states\n got  %s\n want %s", got, want)
 	}
 }

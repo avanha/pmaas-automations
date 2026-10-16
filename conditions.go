@@ -123,6 +123,58 @@ func AllOf(conditions ...Condition) Condition {
 	}
 }
 
+// AnyOf is a condition that is met when any one of the conditions is, whatever the others say: a condition that is met
+// is met whether or not another can be told. Otherwise, if any can't be told it can't be told, and if none can be told
+// and none is met it is not met. With no conditions nothing is met. It gives the reasons of those that made it what it is.
+func AnyOf(conditions ...Condition) Condition {
+	check(conditions)
+
+	return func() (Result, string) {
+		var met, unmet, unknown []string
+
+		for _, condition := range conditions {
+			switch result, reason := condition(); result {
+			case Met:
+				met = append(met, reason)
+			case Unknown:
+				unknown = append(unknown, reason)
+			default:
+				unmet = append(unmet, reason)
+			}
+		}
+
+		switch {
+		case len(met) > 0:
+			return Met, strings.Join(met, "; ")
+		case len(unknown) > 0:
+			return Unknown, strings.Join(unknown, "; ")
+		default:
+			return Unmet, strings.Join(unmet, "; ")
+		}
+	}
+}
+
+// Not is a condition that is met when the condition is not, and not met when it is. A condition that can't be told
+// can't be told either way. It gives the same reason, since the reason says how things are, not what is made of them.
+func Not(condition Condition) Condition {
+	if condition == nil {
+		panic("automations.Not: no condition")
+	}
+
+	return func() (Result, string) {
+		result, reason := condition()
+
+		switch result {
+		case Met:
+			return Unmet, reason
+		case Unmet:
+			return Met, reason
+		default:
+			return Unknown, reason
+		}
+	}
+}
+
 func check(conditions []Condition) {
 	for i, condition := range conditions {
 		if condition == nil {
@@ -247,18 +299,8 @@ func Warmer(thermometer environment.IWirelessThermometer, than environment.IWire
 }
 
 // Follow makes something to run, for New, that keeps a switch on while the condition is met and off while it is not,
-// and changes it no more often than every minInterval.
-//
-// Each time it is run it looks at the condition and at the switch. If the switch is already as it should be, there is
-// nothing to do and it says so by not being ready, which costs nothing and is not logged or kept. If the condition can't
-// be told, it leaves the switch as it is. If it needs to change the switch but the switch changed less than minInterval
-// ago, it waits, so that a temperature hovering around a limit doesn't have a fan starting and stopping every minute.
-// How long ago the switch changed is the switch's own word for it, so it counts a change someone made by hand, and
-// it isn't forgotten when the server restarts.
-//
-// Run it often, with a trigger like Every. It is the automation's job to say when it is looked at. Since that is
-// once a minute, a change that has been held back is made at the first look after the interval has passed, which can
-// be up to a minute after it.
+// and changes it no more often than every minInterval. It is Regulate with the opposite of the condition for turning
+// off; use Regulate for a switch that should turn on at one point and off at another, which stops it flapping.
 func Follow(sw device.ISwitch, condition Condition, minInterval time.Duration) func() (string, error) {
 	if sw == nil {
 		panic("automations.Follow: no switch")
@@ -268,8 +310,37 @@ func Follow(sw device.ISwitch, condition Condition, minInterval time.Duration) f
 		panic("automations.Follow: no condition")
 	}
 
+	return Regulate(sw, condition, Not(condition), minInterval)
+}
+
+// Regulate makes something to run, for New, that turns a switch on when turnOn is met and off when turnOff is met, and
+// otherwise leaves it as it is, changing it no more often than every minInterval.
+//
+// Two conditions, and not one, so that there can be a gap between them: a fan that comes on above 90°F and goes off
+// below 88°F doesn't start and stop as the temperature wobbles across 90. Between the two it stays as it is. Only the
+// condition for the way the switch could go matters: a switch that is off is only turned on, and one that is on is only
+// turned off, so turnOn being met while the switch is on, or turnOff while it is off, is nothing to do.
+//
+// Each time it is run it looks at the conditions and the switch. If there is nothing to do it says so by not being ready,
+// which costs nothing and is not logged or kept. If the condition that matters can't be told, it leaves the switch as it
+// is. If it needs to change the switch but the switch changed less than minInterval ago, it waits, so that a
+// temperature moving fast doesn't have a fan starting and stopping every minute. How long ago the switch changed is the
+// switch's own word for it, so it counts a change someone made by hand, and it isn't forgotten when the server restarts.
+// A switch that has not said what state it is in is turned on if turnOn is met, and otherwise off if turnOff is.
+//
+// Run it often, with a trigger like Every. It is the automation's job to say when it is looked at. Since that is
+// once a minute, a change that has been held back is made at the first look after the interval has passed, which can
+// be up to a minute after it.
+func Regulate(sw device.ISwitch, turnOn Condition, turnOff Condition, minInterval time.Duration) func() (string, error) {
+	if sw == nil {
+		panic("automations.Regulate: no switch")
+	}
+
+	if turnOn == nil || turnOff == nil {
+		panic("automations.Regulate: a condition is missing")
+	}
+
 	return func() (string, error) {
-		result, reason := condition()
 		data := sw.GetSwitchData()
 
 		name := data.Name
@@ -277,18 +348,46 @@ func Follow(sw device.ISwitch, condition Condition, minInterval time.Duration) f
 			name = "the switch"
 		}
 
-		if result == Unknown {
-			return "", automation.NotReady("leaving %s as it is: %s", name, reason)
-		}
+		onResult, onReason := turnOn()
+		offResult, offReason := turnOff()
 
-		wanted := device.SwitchStateOff
-		if result == Met {
-			wanted = device.SwitchStateOn
-		}
+		// What this run is to do about the switch, and why: nothing, or a state to put it in.
+		var wanted device.SwitchState
+		var reason string
 
-		// A switch that has not reported is Unknown, which is neither state, so it is told.
-		if data.State == wanted {
-			return "", automation.NotReady("%s is %s, as it should be: %s", name, wanted, reason)
+		switch data.State {
+		case device.SwitchStateOn:
+			switch offResult {
+			case Unknown:
+				return "", automation.NotReady("leaving %s as it is: %s", name, offReason)
+			case Unmet:
+				return "", automation.NotReady("%s is On: %s", name, offReason)
+			}
+
+			wanted, reason = device.SwitchStateOff, offReason
+		case device.SwitchStateOff:
+			switch onResult {
+			case Unknown:
+				return "", automation.NotReady("leaving %s as it is: %s", name, onReason)
+			case Unmet:
+				return "", automation.NotReady("%s is Off: %s", name, onReason)
+			}
+
+			wanted, reason = device.SwitchStateOn, onReason
+		default:
+			switch {
+			case onResult == Met:
+				wanted, reason = device.SwitchStateOn, onReason
+			case offResult == Met:
+				wanted, reason = device.SwitchStateOff, offReason
+			case onResult == Unknown:
+				return "", automation.NotReady("leaving %s as it is: %s", name, onReason)
+			case offResult == Unknown:
+				return "", automation.NotReady("leaving %s as it is: %s", name, offReason)
+			default:
+				return "", automation.NotReady("%s has not said whether it is on or off, and nothing says to change it: %s; %s",
+					name, onReason, offReason)
+			}
 		}
 
 		// A switch that has never changed has a zero time of changing, which is as long ago as can be.
