@@ -430,7 +430,8 @@ func TestFollow_ASwitchThatHasNeverChangedOrNeverReportedIsNotHeldBack(t *testin
 		t.Errorf("never changed: %v, sets %v", err, neverChanged.sets)
 	}
 
-	unreported := newTimedSwitch(device.SwitchStateUnknown, noon.Add(-time.Second))
+	// By the SPI's contract a switch that has never reported has never been seen to change.
+	unreported := newTimedSwitch(device.SwitchStateUnknown, time.Time{})
 
 	if _, err := Follow(unreported, conditionOf(Unmet, "cool"), time.Hour)(); err != nil || len(unreported.sets) != 1 ||
 		unreported.sets[0] != device.SwitchStateOff {
