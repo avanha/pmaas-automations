@@ -74,5 +74,6 @@ conf.Add(automations.New("garage-door-open", "Alert when the garage door is left
 	automations.WithCatchUp(0)))
 ```
 
-`DoorSensorOffline(sensor, duration)` is the condition for an alert of its own about a sensor that has gone quiet. A condition
-that can't be told, like a door whose sensor is offline, leaves the alert as it is.
+A condition that can't be told, like a door whose sensor is offline, leaves the alert as it is. An alert about the sensor
+itself being offline isn't an automation: it is a setting on the device (`alert.WhenOffline`, in pmaas-spi), for the plugin
+that looks after it.

@@ -63,34 +63,3 @@ func DoorOpenFor(door device.IDoorSensor, duration time.Duration) Condition {
 		return Met, fmt.Sprintf("%s has been open for %s", name, open.Truncate(time.Second))
 	}
 }
-
-// DoorSensorOffline is met when the sensor has been unreachable for at least the duration, and not met while it is
-// reachable or has been out of touch for less. It can't be told if the sensor doesn't say whether it is reachable.
-func DoorSensorOffline(door device.IDoorSensor, duration time.Duration) Condition {
-	if door == nil {
-		panic("automations.DoorSensorOffline: no door sensor")
-	}
-
-	return func() (Result, string) {
-		data := door.GetDoorSensorData()
-
-		name := data.Name
-		if name == "" {
-			name = "the door"
-		}
-
-		switch data.Connectivity {
-		case environment.ConnectivityOnline:
-			return Unmet, fmt.Sprintf("%s's sensor is online", name)
-		case environment.ConnectivityOffline:
-			offline := now().Sub(data.OfflineSince)
-			if offline < duration {
-				return Unmet, fmt.Sprintf("%s's sensor has been offline for %s, not yet %s", name, offline.Truncate(time.Second), duration)
-			}
-
-			return Met, fmt.Sprintf("%s's sensor has been offline for %s", name, offline.Truncate(time.Second))
-		default:
-			return Unknown, fmt.Sprintf("%s's sensor has not said whether it is reachable", name)
-		}
-	}
-}

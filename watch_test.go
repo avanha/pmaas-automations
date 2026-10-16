@@ -309,28 +309,9 @@ func TestDoorOpenFor_ADoorFoundOpenCountsFromTheFirstTimeItWasSeenOpen(t *testin
 	expect(t, "reopened, first look", condition, Unmet, "Garage door has been open for 0s, not yet 5m0s")
 }
 
-func TestDoorSensorOffline(t *testing.T) {
-	withNow(t, noon)
-
-	online := door(device.DoorPositionClosed, time.Time{})
-	expect(t, "online", DoorSensorOffline(online, 5*time.Minute), Unmet, "Garage door's sensor is online")
-
-	offline := door(device.DoorPositionClosed, time.Time{})
-	offline.data.Connectivity, offline.data.OfflineSince = environment.ConnectivityOffline, noon.Add(-2*time.Minute)
-	expect(t, "just offline", DoorSensorOffline(offline, 5*time.Minute), Unmet, "Garage door's sensor has been offline for 2m0s, not yet 5m0s")
-
-	offline.data.OfflineSince = noon.Add(-5 * time.Minute)
-	expect(t, "offline long enough", DoorSensorOffline(offline, 5*time.Minute), Met, "Garage door's sensor has been offline for 5m0s")
-
-	unsaid := door(device.DoorPositionClosed, time.Time{})
-	unsaid.data.Connectivity = environment.ConnectivityUnknown
-	expect(t, "unsaid", DoorSensorOffline(unsaid, 5*time.Minute), Unknown, "Garage door's sensor has not said whether it is reachable")
-}
-
 func TestDoorConditions_PanicWithoutASensor(t *testing.T) {
 	for name, make := range map[string]func(){
-		"open":    func() { DoorOpenFor(nil, time.Minute) },
-		"offline": func() { DoorSensorOffline(nil, time.Minute) },
+		"open": func() { DoorOpenFor(nil, time.Minute) },
 	} {
 		func() {
 			defer func() {
