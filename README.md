@@ -56,3 +56,23 @@ automations.New("attic-fan", "Run the attic fan when the attic is hot",
 A condition has three answers: met, unmet, and unknown. `When` acts only on met; `Follow` and `Regulate` hold on unknown.
 `AllOf` is met when all are (and unknown if any is, since that one might have decided it); `AnyOf` is met when any is, whatever
 the others can tell; `Not` turns met into unmet and back.
+
+### Alerts that follow a condition
+
+`WatchAlert` holds an alert for as long as a condition is met, raising it when it becomes met and clearing it when it
+stops, and re-raising it with a new severity when the severity changes (an alert that escalates is still one alert). The
+severity is a function of the time, so an alert can be a warning in the day and critical after dark:
+
+```go
+conf.Add(automations.New("garage-door-open", "Alert when the garage door is left open",
+	trigger.Every(time.Minute),
+	automations.WatchAlert(conf.Alerts(), "garage-door-open", "Garage door open",
+		automations.SeverityBetween(
+			trigger.Sun(home, sun.CivilDusk, 0), trigger.Sun(home, sun.CivilDawn, 0),
+			alert.SeverityCritical, alert.SeverityWarning),
+		automations.DoorOpenFor(garageDoor, 5*time.Minute)),
+	automations.WithCatchUp(0)))
+```
+
+`DoorSensorOffline(sensor, duration)` is the condition for an alert of its own about a sensor that has gone quiet. A condition
+that can't be told, like a door whose sensor is offline, leaves the alert as it is.

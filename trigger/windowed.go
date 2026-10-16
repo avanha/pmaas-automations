@@ -38,17 +38,9 @@ func (w *windowed) Description() string {
 		w.inner.Description(), strings.TrimPrefix(w.open.Description(), "at "), strings.TrimPrefix(w.close.Description(), "at "))
 }
 
-// inWindow is whether t is within a window: the latest time the window opened, at or before t, is later than the
-// latest time it closed. A window that has never closed is open, once it has opened.
+// inWindow is whether t is within the window.
 func (w *windowed) inWindow(t time.Time) bool {
-	opened, ok := w.open.Previous(t)
-	if !ok {
-		return false
-	}
-
-	closed, ok := w.close.Previous(t)
-
-	return !ok || opened.After(closed)
+	return InWindow(w.open, w.close, t)
 }
 
 func (w *windowed) Previous(t time.Time) (time.Time, bool) {
@@ -100,4 +92,20 @@ func (w *windowed) Next(t time.Time) (time.Time, bool) {
 	}
 
 	return time.Time{}, false
+}
+
+// InWindow is whether t is within a daily window that opens whenever open is due and closes whenever close is: the latest
+// time the window opened, at or before t, is later than the latest time it closed. It is open from the moment it opens
+// and closed from the moment it closes, and a window that has opened and never closed is open. It works for windows
+// that cross midnight, and for ones whose ends move with the sun: InWindow(Sun(l, sun.CivilDusk, 0), Sun(l, sun.CivilDawn, 0), t)
+// is whether it is dark at t.
+func InWindow(open Trigger, close Trigger, t time.Time) bool {
+	opened, ok := open.Previous(t)
+	if !ok {
+		return false
+	}
+
+	closed, ok := close.Previous(t)
+
+	return !ok || opened.After(closed)
 }

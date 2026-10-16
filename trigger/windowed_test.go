@@ -201,3 +201,43 @@ func TestWindowed_AWindowThatOpensAndNeverClosesIsOpenFromThenOn(t *testing.T) {
 	expectPrevious(t, always, "2026-10-16 23:30:00", "2026-10-16 23:00 MDT")
 	expectNext(t, always, "2026-10-16 05:30:00", "2026-10-16 06:00 MDT")
 }
+
+func TestInWindow(t *testing.T) {
+	day := InWindow
+
+	open, close := AtTimeOfDay(8, 0), AtTimeOfDay(20, 0)
+
+	for _, c := range []struct {
+		at   string
+		want bool
+	}{
+		{"2026-10-16 07:59:59", false}, {"2026-10-16 08:00:00", true}, {"2026-10-16 12:00:00", true},
+		{"2026-10-16 19:59:59", true}, {"2026-10-16 20:00:00", false}, {"2026-10-16 23:00:00", false}, {"2026-10-16 03:00:00", false},
+	} {
+		if got := day(open, close, local(c.at)); got != c.want {
+			t.Errorf("%s: %v, want %v", c.at, got, c.want)
+		}
+	}
+
+	// Across midnight.
+	if !InWindow(AtTimeOfDay(22, 0), AtTimeOfDay(6, 0), local("2026-10-16 02:00:00")) {
+		t.Error("2am is not within 22:00 to 06:00")
+	}
+}
+
+func TestInWindow_DarkAndLightByTheSun(t *testing.T) {
+	dusk, dawn := Sun(lafayette, sun.CivilDusk, 0), Sun(lafayette, sun.CivilDawn, 0)
+
+	// 16 October in Lafayette: civil dawn 6:45am, civil dusk 6:46pm, in daylight saving time.
+	for _, c := range []struct {
+		at   string
+		dark bool
+	}{
+		{"2026-10-16 03:00:00", true}, {"2026-10-16 06:44:00", true}, {"2026-10-16 06:46:00", false}, {"2026-10-16 12:00:00", false},
+		{"2026-10-16 18:45:00", false}, {"2026-10-16 18:47:00", true}, {"2026-10-16 23:59:00", true},
+	} {
+		if got := InWindow(dusk, dawn, local(c.at)); got != c.dark {
+			t.Errorf("%s: dark is %v, want %v", c.at, got, c.dark)
+		}
+	}
+}
