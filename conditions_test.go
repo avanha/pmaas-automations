@@ -402,7 +402,7 @@ func TestFollow_DoesNotChangeTheSwitchMoreOftenThanTheInterval(t *testing.T) {
 
 	_, err := follow()
 	if reason := notReadyReason(t, err); len(fan.sets) != 0 ||
-		reason != "Attic fan should be On (hot), but changed 2m0s ago, so it waits until it has been 5m0s" {
+		reason != "Attic fan should be On (hot), but it changed 2m0s ago, and is not changed again until 5m0s have passed" {
 		t.Errorf("reason %q, sets %v", reason, fan.sets)
 	}
 

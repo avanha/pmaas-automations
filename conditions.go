@@ -256,7 +256,9 @@ func Warmer(thermometer environment.IWirelessThermometer, than environment.IWire
 // How long ago the switch changed is the switch's own word for it, so it counts a change someone made by hand, and
 // it isn't forgotten when the server restarts.
 //
-// Run it often, with a trigger like Every. It is the automation's job to say when it is looked at.
+// Run it often, with a trigger like Every. It is the automation's job to say when it is looked at. Since that is
+// once a minute, a change that has been held back is made at the first look after the interval has passed, which can
+// be up to a minute after it.
 func Follow(sw device.ISwitch, condition Condition, minInterval time.Duration) func() (string, error) {
 	if sw == nil {
 		panic("automations.Follow: no switch")
@@ -291,8 +293,8 @@ func Follow(sw device.ISwitch, condition Condition, minInterval time.Duration) f
 
 		// A switch that has never changed has a zero time of changing, which is as long ago as can be.
 		if since := now().Sub(data.LastChangeTime); since < minInterval {
-			return "", automation.NotReady("%s should be %s (%s), but changed %s ago, so it waits until it has been %s",
-				name, wanted, reason, since.Round(time.Second), minInterval)
+			return "", automation.NotReady("%s should be %s (%s), but it changed %s ago, and is not changed again until %s have passed",
+				name, wanted, reason, since.Truncate(time.Second), minInterval)
 		}
 
 		if err := sw.SetState(wanted); err != nil {
