@@ -13,3 +13,16 @@ code") and hands them to the automations plugin (`pmaas-plugin-automations`), wh
   minutes before sunset"). A trigger is a pure function of the time, with `Previous` and `Next`, so that running on
   time, catching up after a pause and catching up after a restart are all the same question: when was this last due,
   and has it been done since?
+- `automations` (this package): `New` makes an automation from a trigger and something to run. `TurnOn`, `TurnOff` and
+  `Toggle` are things to run on switches. `When` runs something only when conditions are met (`SwitchIs`,
+  `TemperatureBelow`), and otherwise says it is not ready and why, so the automation waits for them until its catch-up
+  passes. `Fahrenheit` and `Celsius` make temperatures.
+
+```go
+automations.New("fan-off", "Turn off the fan once it cools after 1 AM",
+	trigger.AtTimeOfDay(1, 0),
+	automations.When(automations.TurnOff(fan),
+		automations.SwitchIs(fan, device.SwitchStateOn),
+		automations.TemperatureBelow(room, automations.Fahrenheit(75), 10*time.Minute)),
+	automations.WithCatchUp(6*time.Hour+59*time.Minute)) // acts only before 8:00
+```
