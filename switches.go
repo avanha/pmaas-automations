@@ -21,44 +21,92 @@ func TurnOff(switches ...device.ISwitch) func() (string, error) {
 }
 
 func setSwitches(state device.SwitchState, switches []device.ISwitch) func() (string, error) {
+	checkSwitches("turn "+state.String(), switches)
+
+	return func() (string, error) {
+		return applyState(state, switches)
+	}
+}
+
+// Toggle is something for New to run that flips the switches: on the first run it turns them all on if the first is off
+// (or has not said), and off if it is on, and on each run after it turns them all the opposite of the time before.
+//
+// Flipping isn't something that can safely be done twice, which a retry after a failure would do, so it doesn't flip
+// what it finds: it decides which state this run is to put them all in, and keeps deciding the same until the run
+// has succeeded. If one switch can't be reached, the others are set again, to the same state, at the retry, and then
+// the next run takes them all the other way. Switches that were changed by hand since the last run are put in the state
+// regardless. The state it expects is not kept across a restart: after one it begins again from the first switch.
+func Toggle(switches ...device.ISwitch) func() (string, error) {
+	checkSwitches("toggle", switches)
+
+	next := device.SwitchStateUnknown
+
+	return func() (string, error) {
+		if next == device.SwitchStateUnknown {
+			next = device.SwitchStateOn
+
+			if switches[0].GetSwitchData().State == device.SwitchStateOn {
+				next = device.SwitchStateOff
+			}
+		}
+
+		note, err := applyState(next, switches)
+		if err != nil {
+			return note, err
+		}
+
+		if next == device.SwitchStateOn {
+			next = device.SwitchStateOff
+		} else {
+			next = device.SwitchStateOn
+		}
+
+		return note, nil
+	}
+}
+
+// checkSwitches panics if there is nothing to act on, as the constructors do, saying what for.
+func checkSwitches(what string, switches []device.ISwitch) {
 	if len(switches) == 0 {
-		panic(fmt.Sprintf("automations: nothing to turn %s", strings.ToLower(state.String())))
+		panic(fmt.Sprintf("automations: nothing to %s", strings.ToLower(what)))
 	}
 
 	for i, sw := range switches {
 		if sw == nil {
-			panic(fmt.Sprintf("automations: switch %d to turn %s is nil", i, strings.ToLower(state.String())))
+			panic(fmt.Sprintf("automations: switch %d to %s is nil", i, strings.ToLower(what)))
 		}
 	}
+}
 
-	return func() (string, error) {
-		var changed, already []string
-		var failures []error
+// applyState puts every switch in the state, leaving alone those already in it, and says what it did. Every switch is
+// tried, whatever happens to the others, and the error says which could not be.
+func applyState(state device.SwitchState, switches []device.ISwitch) (string, error) {
+	var changed, already []string
+	var failures []error
 
-		for i, sw := range switches {
-			data := sw.GetSwitchData()
-			name := data.Name
+	for i, sw := range switches {
+		data := sw.GetSwitchData()
+		name := data.Name
 
-			if name == "" {
-				name = fmt.Sprintf("switch %d", i+1)
-			}
-
-			// One that has not reported anything is Unknown, which is neither state, so it is told.
-			if data.State == state {
-				already = append(already, name)
-				continue
-			}
-
-			if err := sw.SetState(state); err != nil {
-				failures = append(failures, fmt.Errorf("%s: %w", name, err))
-				continue
-			}
-
-			changed = append(changed, name)
+		if name == "" {
+			name = fmt.Sprintf("switch %d", i+1)
 		}
 
-		return describe(state, changed, already), errors.Join(failures...)
+		// One that has not reported anything is Unknown, which is neither state, so it is told.
+		if data.State == state {
+			already = append(already, name)
+			continue
+		}
+
+		if err := sw.SetState(state); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", name, err))
+			continue
+		}
+
+		changed = append(changed, name)
 	}
+
+	return describe(state, changed, already), errors.Join(failures...)
 }
 
 // describe is what was done, for the page: "turned on A, B; C was already on".

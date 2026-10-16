@@ -185,3 +185,92 @@ func TestTurnOn_PanicsWhenThereIsNothingToTurnOn(t *testing.T) {
 		}()
 	}
 }
+
+func TestToggle_FlipsAllOfThemEachRunStartingFromTheFirst(t *testing.T) {
+	a, b := sw("A", device.SwitchStateOff), sw("B", device.SwitchStateOn)
+	toggle := Toggle(a, b)
+
+	for i, want := range []device.SwitchState{
+		device.SwitchStateOn, device.SwitchStateOff, device.SwitchStateOn, device.SwitchStateOff,
+	} {
+		if _, err := toggle(); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+
+		if a.data.State != want || b.data.State != want {
+			t.Fatalf("run %d: A is %v and B is %v, want both %v", i, a.data.State, b.data.State, want)
+		}
+	}
+}
+
+func TestToggle_BeginsByTurningOffWhatIsOnAndOnWhatHasNotSaid(t *testing.T) {
+	on := sw("A", device.SwitchStateOn)
+
+	if _, err := Toggle(on)(); err != nil || on.data.State != device.SwitchStateOff {
+		t.Errorf("an on switch: %v %v", on.data.State, err)
+	}
+
+	unknown := sw("A", device.SwitchStateUnknown)
+
+	if _, err := Toggle(unknown)(); err != nil || unknown.data.State != device.SwitchStateOn {
+		t.Errorf("a switch that has not said: %v %v", unknown.data.State, err)
+	}
+}
+
+func TestToggle_AFailureIsRetriedToTheSameStateAndThenTheNextRunFlipsThemAll(t *testing.T) {
+	a, b := sw("A", device.SwitchStateOff), sw("B", device.SwitchStateOff)
+	b.err = errors.New("offline")
+	toggle := Toggle(a, b)
+
+	note, err := toggle()
+	if err == nil || a.data.State != device.SwitchStateOn || b.data.State != device.SwitchStateOff || note != "turned on A" {
+		t.Fatalf("first run: A %v, B %v, note %q, err %v", a.data.State, b.data.State, note, err)
+	}
+
+	// The retry puts them in the state the first run meant to; it doesn't flip A back because it is now on.
+	b.err = nil
+
+	note, err = toggle()
+	if err != nil || a.data.State != device.SwitchStateOn || b.data.State != device.SwitchStateOn || note != "turned on B; A already on" {
+		t.Fatalf("retry: A %v, B %v, note %q, err %v", a.data.State, b.data.State, note, err)
+	}
+
+	if _, err := toggle(); err != nil || a.data.State != device.SwitchStateOff || b.data.State != device.SwitchStateOff {
+		t.Errorf("next run: A %v, B %v, err %v", a.data.State, b.data.State, err)
+	}
+
+	if len(a.sets) != 2 {
+		t.Errorf("A was sent %v: it should have been turned on once and off once", a.sets)
+	}
+}
+
+func TestToggle_PutsAllOfThemInTheStateEvenIfSomeoneChangedOneByHand(t *testing.T) {
+	a, b := sw("A", device.SwitchStateOff), sw("B", device.SwitchStateOff)
+	toggle := Toggle(a, b)
+
+	_, _ = toggle()                      // both on
+	b.data.State = device.SwitchStateOff // someone turned B off
+
+	_, _ = toggle() // both off: A is turned off, B was already
+
+	if a.data.State != device.SwitchStateOff || b.data.State != device.SwitchStateOff {
+		t.Errorf("A %v, B %v", a.data.State, b.data.State)
+	}
+}
+
+func TestToggle_PanicsWhenThereIsNothingToToggle(t *testing.T) {
+	for name, make := range map[string]func(){
+		"none": func() { Toggle() },
+		"nil":  func() { Toggle(sw("a", device.SwitchStateOn), nil) },
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: didn't panic", name)
+				}
+			}()
+
+			make()
+		}()
+	}
+}

@@ -157,3 +157,61 @@ func plural(n int, unit string) string {
 
 	return fmt.Sprintf("%d %ss", n, unit)
 }
+
+// Every is due every interval, counting from midnight in the zone of the time it is asked about: Every(5 * time.Minute)
+// is due at 00:00, 00:05, 00:10, and so on through the day. Each day begins the count again, so an interval that doesn't
+// divide a day evenly has a shorter last stretch, and a day when daylight saving time changes the length of the day
+// has the stretches the clock really has.
+//
+// The interval must be a whole number of minutes, from a minute to a day. It panics otherwise, for the reason
+// AtTimeOfDay does.
+func Every(interval time.Duration) Trigger {
+	if interval < time.Minute || interval > 24*time.Hour || interval%time.Minute != 0 {
+		panic(fmt.Sprintf("trigger.Every(%v): not a whole number of minutes from one minute to a day", interval))
+	}
+
+	return &every{interval: interval}
+}
+
+type every struct {
+	interval time.Duration
+}
+
+func (e *every) Description() string {
+	switch e.interval {
+	case time.Minute:
+		return "every minute"
+	case time.Hour:
+		return "every hour"
+	default:
+		return "every " + durationInWords(e.interval)
+	}
+}
+
+// startOfDay is midnight, in t's zone, at the start of the day t is in.
+func startOfDay(t time.Time) time.Time {
+	year, month, date := t.Date()
+
+	return time.Date(year, month, date, 0, 0, 0, 0, t.Location())
+}
+
+func (e *every) Previous(t time.Time) (time.Time, bool) {
+	midnight := startOfDay(t)
+
+	return midnight.Add(t.Sub(midnight) / e.interval * e.interval), true
+}
+
+func (e *every) Next(t time.Time) (time.Time, bool) {
+	midnight := startOfDay(t)
+	next := midnight.Add((t.Sub(midnight)/e.interval + 1) * e.interval)
+
+	// The count begins again at midnight, so the next stretch can't carry into the next day.
+	year, month, date := t.Date()
+	nextMidnight := time.Date(year, month, date+1, 0, 0, 0, 0, t.Location())
+
+	if !next.Before(nextMidnight) {
+		return nextMidnight, true
+	}
+
+	return next, true
+}
