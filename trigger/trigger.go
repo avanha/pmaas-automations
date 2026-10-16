@@ -1,9 +1,6 @@
-// Package trigger says when an automation is due.
+// Package trigger has the triggers that say when an automation is due: at a time of day, or at an event of the sun.
 //
-// A trigger is a pure function of the time: it knows nothing about what it's for, or whether it has been acted on.
-// That is what makes it easy to test, and what lets whatever runs automations treat running on time, catching up
-// after a pause and catching up after a restart all as the same question: when was this last due, and has it been
-// done since?
+// A trigger is a pure function of the time (see automation.Trigger), which is what makes it easy to test.
 package trigger
 
 import (
@@ -12,25 +9,16 @@ import (
 	"time"
 
 	"github.com/avanha/pmaas-automations/sun"
+	"github.com/avanha/pmaas-spi/automation"
 )
 
 // searchDays is how far from the time asked about a trigger looks for when it's due, a year and a bit. A trigger
 // that isn't due at all in that long, like sunset north of the Arctic Circle in summer, is not due.
 const searchDays = 400
 
-// Trigger says when something is due, once a day.
-type Trigger interface {
-	// Previous is the latest time at or before t that the trigger was due. It reports false if it has not been due
-	// for more than a year.
-	Previous(t time.Time) (time.Time, bool)
-
-	// Next is the earliest time after t that the trigger is due. It reports false if it is not due for more than a
-	// year.
-	Next(t time.Time) (time.Time, bool)
-
-	// Description says when the trigger is due in words, for people: "at 17:00", "15 minutes before sunset".
-	Description() string
-}
+// Trigger is what the server asks when an automation is due. It's defined in the SPI, so that the server doesn't
+// have to know about this package; everything here returns it.
+type Trigger = automation.Trigger
 
 // Times are in the zone of the time the trigger is asked about, which is the server's local time when it's asked
 // about the time now. Each is to the minute, because that is how often anything checks.
