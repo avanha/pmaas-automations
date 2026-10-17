@@ -78,6 +78,30 @@ func checkSwitches(what string, switches []device.ISwitch) {
 	}
 }
 
+// SwitchNames lists the switches by name, as a person would: "Kitchen Relay", "Kitchen Relay and Porch Relay", "A, B and
+// C". A switch that hasn't said its name, because its device hasn't connected yet, is "switch 2", by its place in the list.
+// It is for a description that names what an automation acts on (see WithDescriptionFunc).
+func SwitchNames(switches ...device.ISwitch) string {
+	names := make([]string, len(switches))
+
+	for i, sw := range switches {
+		names[i] = sw.GetSwitchData().Name
+
+		if names[i] == "" {
+			names[i] = fmt.Sprintf("switch %d", i+1)
+		}
+	}
+
+	switch len(names) {
+	case 0:
+		return "no switches"
+	case 1:
+		return names[0]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
+}
+
 // applyState puts every switch in the state, leaving alone those already in it, and says what it did. Every switch is
 // tried, whatever happens to the others, and the error says which could not be.
 func applyState(state device.SwitchState, switches []device.ISwitch) (string, error) {

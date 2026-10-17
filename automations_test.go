@@ -274,3 +274,39 @@ func TestToggle_PanicsWhenThereIsNothingToToggle(t *testing.T) {
 		}()
 	}
 }
+
+func TestNew_ADescriptionWorkedOutEachTimeItIsAsked(t *testing.T) {
+	name := "first"
+
+	a := New("id", "name", trigger.AtTimeOfDay(1, 0), func() (string, error) { return "", nil },
+		WithDescription("static"), WithDescriptionFunc(func() string { return "on " + name }))
+
+	if a.Description() != "on first" {
+		t.Errorf("description %q", a.Description())
+	}
+
+	name = "second"
+
+	if a.Description() != "on second" {
+		t.Errorf("description %q", a.Description())
+	}
+}
+
+func TestSwitchNames(t *testing.T) {
+	named := func(name string) device.ISwitch { return &fakeSwitch{data: device.Switch{Name: name}} }
+
+	for name, c := range map[string]struct {
+		switches []device.ISwitch
+		want     string
+	}{
+		"none":                  {nil, "no switches"},
+		"one":                   {[]device.ISwitch{named("Porch")}, "Porch"},
+		"two":                   {[]device.ISwitch{named("Porch"), named("Patio")}, "Porch and Patio"},
+		"three":                 {[]device.ISwitch{named("A"), named("B"), named("C")}, "A, B and C"},
+		"one that has not said": {[]device.ISwitch{named("A"), named(""), named("C")}, "A, switch 2 and C"},
+	} {
+		if got := SwitchNames(c.switches...); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+	}
+}

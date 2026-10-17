@@ -24,6 +24,13 @@ func WithDescription(description string) Option {
 	return func(m *made) { m.description = description }
 }
 
+// WithDescriptionFunc is WithDescription for a description that is worked out each time the page is made, such as one
+// that names devices, whose names aren't known until they have connected (see SwitchNames). It is called on the goroutine
+// the automations are run on, so it may look at the devices the automation uses, and it should be quick.
+func WithDescriptionFunc(description func() string) Option {
+	return func(m *made) { m.describe = description }
+}
+
 // WithCatchUp sets how long after it was due the automation is still run. Zero means only in the minute it is due.
 // See automation.Automation.
 func WithCatchUp(catchUp time.Duration) Option {
@@ -61,14 +68,22 @@ type made struct {
 	id          string
 	name        string
 	description string
+	describe    func() string
 	trigger     automation.Trigger
 	catchUp     time.Duration
 	run         func() (string, error)
 }
 
-func (m *made) ID() string                  { return m.id }
-func (m *made) Name() string                { return m.name }
-func (m *made) Description() string         { return m.description }
+func (m *made) ID() string   { return m.id }
+func (m *made) Name() string { return m.name }
+func (m *made) Description() string {
+	if m.describe != nil {
+		return m.describe()
+	}
+
+	return m.description
+}
+
 func (m *made) Trigger() automation.Trigger { return m.trigger }
 func (m *made) CatchUp() time.Duration      { return m.catchUp }
 func (m *made) Run() (string, error)        { return m.run() }
