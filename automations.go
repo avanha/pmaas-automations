@@ -34,7 +34,7 @@ func WithDescriptionFunc(description func() string) Option {
 // WithCatchUp sets how long after it was due the automation is still run. Zero means only in the minute it is due.
 // See automation.Automation.
 func WithCatchUp(catchUp time.Duration) Option {
-	return func(m *made) { m.catchUp = catchUp }
+	return func(m *made) { m.catchUp, m.catchUpSet = catchUp, true }
 }
 
 // New makes an automation that does run when trigger says it is due.
@@ -71,6 +71,7 @@ type made struct {
 	describe    func() string
 	trigger     automation.Trigger
 	catchUp     time.Duration
+	catchUpSet  bool
 	run         func() (string, error)
 }
 
@@ -87,3 +88,40 @@ func (m *made) Description() string {
 func (m *made) Trigger() automation.Trigger { return m.trigger }
 func (m *made) CatchUp() time.Duration      { return m.catchUp }
 func (m *made) Run() (string, error)        { return m.run() }
+
+// NewOnEvent makes an automation that is due when an event matches the trigger (see the trigger package: ButtonPressed), and
+// runs at once, not at the next minute. It has no catch-up and is not tried again if it fails: the moment it was wanted has
+// gone. The id and name are as for New; run should leave things right however many times it is called.
+//
+// WithDescription and WithDescriptionFunc apply. It panics if the automation is not valid, or is given WithCatchUp, which has
+// no meaning for it, so that a mistake stops the program starting.
+func NewOnEvent(id string, name string, trigger automation.EventTrigger, run func() (string, error), options ...Option) automation.EventAutomation {
+	m := &made{id: id, name: name, run: run}
+
+	for _, option := range options {
+		option(m)
+	}
+
+	if m.catchUpSet {
+		panic(fmt.Sprintf("automations.NewOnEvent: automation %q is event-driven, so a catch-up means nothing to it", id))
+	}
+
+	a := &madeOnEvent{made: m, trigger: trigger}
+
+	if err := automation.ValidateEvent(a); err != nil {
+		panic(fmt.Sprintf("automations.NewOnEvent: %v", err))
+	}
+
+	if run == nil {
+		panic(fmt.Sprintf("automations.NewOnEvent: automation %q has nothing to run", id))
+	}
+
+	return a
+}
+
+type madeOnEvent struct {
+	*made
+	trigger automation.EventTrigger
+}
+
+func (m *madeOnEvent) EventTrigger() automation.EventTrigger { return m.trigger }

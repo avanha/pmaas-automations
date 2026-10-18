@@ -9,6 +9,7 @@ import (
 	"github.com/avanha/pmaas-automations/trigger"
 	"github.com/avanha/pmaas-spi/automation"
 	"github.com/avanha/pmaas-spi/device"
+	"github.com/avanha/pmaas-spi/events"
 )
 
 func TestNew_MakesAValidAutomationWithTheDefaults(t *testing.T) {
@@ -308,5 +309,57 @@ func TestSwitchNames(t *testing.T) {
 		if got := SwitchNames(c.switches...); got != c.want {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+type alwaysTrigger struct{}
+
+func (alwaysTrigger) Matches(*events.EventInfo) bool { return true }
+func (alwaysTrigger) Description() string            { return "always" }
+
+func TestNewOnEvent_MakesAValidEventAutomation(t *testing.T) {
+	runs := 0
+
+	a := NewOnEvent("lights-on", "Turn on the lights", alwaysTrigger{}, func() (string, error) { runs++; return "done", nil },
+		WithDescription("more"))
+
+	if a.ID() != "lights-on" || a.Name() != "Turn on the lights" || a.Description() != "more" || a.EventTrigger().Description() != "always" {
+		t.Errorf("automation: %v %v %q %v", a.ID(), a.Name(), a.Description(), a.EventTrigger())
+	}
+
+	if note, err := a.Run(); note != "done" || err != nil || runs != 1 {
+		t.Errorf("run: %q, %v, %d times", note, err, runs)
+	}
+
+	if err := automation.ValidateEvent(a); err != nil {
+		t.Errorf("not valid: %v", err)
+	}
+
+	// A description worked out when asked applies to it too.
+	b := NewOnEvent("b", "b", alwaysTrigger{}, func() (string, error) { return "", nil }, WithDescriptionFunc(func() string { return "worked out" }))
+	if b.Description() != "worked out" {
+		t.Errorf("description %q", b.Description())
+	}
+}
+
+func TestNewOnEvent_MistakesPanic(t *testing.T) {
+	run := func() (string, error) { return "", nil }
+
+	for name, mistake := range map[string]func(){
+		"no id":                  func() { NewOnEvent("", "n", alwaysTrigger{}, run) },
+		"no name":                func() { NewOnEvent("i", "", alwaysTrigger{}, run) },
+		"no trigger":             func() { NewOnEvent("i", "n", nil, run) },
+		"nothing to run":         func() { NewOnEvent("i", "n", alwaysTrigger{}, nil) },
+		"a catch-up of any kind": func() { NewOnEvent("i", "n", alwaysTrigger{}, run, WithCatchUp(0)) },
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s did not panic", name)
+				}
+			}()
+
+			mistake()
+		}()
 	}
 }

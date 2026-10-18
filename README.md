@@ -77,3 +77,23 @@ conf.Add(automations.New("garage-door-open", "Alert when the garage door is left
 A condition that can't be told, like a door whose sensor is offline, leaves the alert as it is. An alert about the sensor
 itself being offline isn't an automation: it is a setting on the device (`alert.WhenOffline`, in pmaas-spi), for the plugin
 that looks after it.
+
+### Doing something when something happens
+
+`NewOnEvent` makes an automation that is due when an event matches, such as a button being pressed, instead of at a time. It runs
+the moment the event arrives, not at the next minute.
+
+```go
+conf.AddEvent(pmaasautomations.NewOnEvent(
+    "couch-lights", "Toggle the couch lights",
+    trigger.ButtonPressed(couchButton, device.PressSingle),
+    pmaasautomations.Toggle(lampA, lampB)))
+```
+
+`trigger.ButtonPressed(button, presses...)` is due when the button (a `device.IButton` that also says its entity ID, as the bluetooth
+plugin's beacon buttons do) is pressed in one of the ways given, or any way if none are. `trigger.OnEvent(description, matches)`
+is the general form, for any event.
+
+An event-driven automation has no catch-up, since the moment it was wanted has gone, and is not tried again if it fails; the
+automations plugin raises an alert instead. Giving it `WithCatchUp` panics. Wrap what it does in `When(...)` to make a press do nothing
+unless a condition holds: the press is then recorded as having found the condition not met.
