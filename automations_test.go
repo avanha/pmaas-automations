@@ -363,3 +363,46 @@ func TestNewOnEvent_MistakesPanic(t *testing.T) {
 		}()
 	}
 }
+
+func TestFlip_TurnsAllTheOppositeOfTheFirstEachTimeItLooks(t *testing.T) {
+	a, b := sw("A", device.SwitchStateOff), sw("B", device.SwitchStateOn)
+	flip := Flip(a, b)
+
+	for i, want := range []device.SwitchState{device.SwitchStateOn, device.SwitchStateOff} {
+		if _, err := flip(); err != nil || a.data.State != want || b.data.State != want {
+			t.Fatalf("run %d: A %v, B %v, err %v, want %v", i, a.data.State, b.data.State, err, want)
+		}
+	}
+
+	// Changed by hand in between: the next run goes by what it finds.
+	a.data.State = device.SwitchStateOn
+	if _, err := flip(); err != nil || a.data.State != device.SwitchStateOff || b.data.State != device.SwitchStateOff {
+		t.Errorf("after a hand change: A %v, B %v, err %v", a.data.State, b.data.State, err)
+	}
+}
+
+func TestFlip_TurnsOnWhatHasNotSaidAndLooksAgainAfterAFailure(t *testing.T) {
+	a := sw("A", device.SwitchStateUnknown)
+	a.err = errors.New("offline")
+
+	if _, err := Flip(a)(); err == nil {
+		t.Fatal("no error")
+	}
+
+	a.err = nil
+	flip := Flip(a)
+
+	if _, err := flip(); err != nil || a.data.State != device.SwitchStateOn {
+		t.Errorf("unknown: %v %v", a.data.State, err)
+	}
+}
+
+func TestFlip_PanicsWhenThereIsNothingToFlip(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("didn't panic")
+		}
+	}()
+
+	Flip()
+}

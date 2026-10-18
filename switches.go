@@ -65,6 +65,24 @@ func Toggle(switches ...device.ISwitch) func() (string, error) {
 	}
 }
 
+// Flip is something for New to run that turns the switches the opposite of what the first one is now: all on if it is
+// off or has not said, all off if it is on. Unlike Toggle it keeps nothing between runs, so it is what a button wants: every
+// press does what it looks like it should, whoever last changed the switch. A failure is not retried to the same state by
+// the next press, which looks again.
+func Flip(switches ...device.ISwitch) func() (string, error) {
+	checkSwitches("flip", switches)
+
+	return func() (string, error) {
+		next := device.SwitchStateOn
+
+		if switches[0].GetSwitchData().State == device.SwitchStateOn {
+			next = device.SwitchStateOff
+		}
+
+		return applyState(next, switches)
+	}
+}
+
 // checkSwitches panics if there is nothing to act on, as the constructors do, saying what for.
 func checkSwitches(what string, switches []device.ISwitch) {
 	if len(switches) == 0 {

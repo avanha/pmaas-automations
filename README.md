@@ -14,7 +14,7 @@ code") and hands them to the automations plugin (`pmaas-plugin-automations`), wh
   time, catching up after a pause and catching up after a restart are all the same question: when was this last due,
   and has it been done since?
 - `automations` (this package): `New` makes an automation from a trigger and something to run. `TurnOn`, `TurnOff` and
-  `Toggle` are things to run on switches. `When` runs something only when conditions are met (`SwitchIs`,
+  `Toggle` are things to run on switches (`Flip` turns them the opposite of the first one's state now, which is what a button wants). `When` runs something only when conditions are met (`SwitchIs`,
   `TemperatureBelow`), and otherwise says it is not ready and why, so the automation waits for them until its catch-up
   passes. `Fahrenheit` and `Celsius` make temperatures.
 
